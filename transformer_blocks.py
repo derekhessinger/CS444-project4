@@ -112,15 +112,19 @@ class AttentionBlock(block.Block):
         4. For efficiency, it is helpful to pre-compute the attention gain and assign it to an instance variable
         (e.g. as self.gain) so that you can use it during the forward pass. You have all the info here that is needed
         to compute the gain.
+
+        NOTE: Remember to add your dropout layer to the layers list (otherwise the dropout mode will not get set) and
+        to make the dropout layer's prev reference whatever is passed into this block.
         '''
         super().__init__(blockname, prev_layer_or_block)
         self.H = units
         self.A = num_heads
         self.causal = causal
-        self.gain = 1 / tf.sqrt(self.H / self.A)
-        dropout = Dropout('attention_dropout', dropout_rate, prev_layer_or_block)
-        self.layers.append(dropout)
-        pass
+        # precompute attention gain
+        self.gain = 1 / tf.sqrt(tf.cast(self.H / self.A, dtype=tf.float32))
+        # create dropout layer
+        self.dropout_layer = Dropout('attention_dropout', dropout_rate, prev_layer_or_block)
+        self.layers.append(self.dropout_layer)
 
     def __call__(self, queries, keys, values):
         '''Forward pass through the attention block with activations from the query, key, and value layers.
@@ -150,30 +154,51 @@ class AttentionBlock(block.Block):
         6. Don't forget to incorporate the causal mask to implement causal attention (if that option is turned on).
         The function `tril` from tf_util should be very helpful.11
         '''
-        B = queries.shape[0]
-        T = queries.shape[1]
-        H_A = tf.cast(self.H / self.A, dtype=tf.int32)
-        A = self.A
-        queries = tf.reshape(queries, (B, T, A, H_A))
-        keys = tf.reshape(keys, (B, T, A, H_A))
-        values = tf.reshape(values, (B, T, A, H_A))
-
-        values = tf.transpose(values, [0, 2, 1, 3])
-
-        queries = tf.transpose(queries, [0, 2, 1, 3]) # B T A H/A into B A T H/A
-        keys_t = tf.transpose(keys, [0, 2, 3, 1]) # B T A H/A into B A H/A T
-
-        A_1 = queries@keys_t * self.gain # B A T T
-        print(A_1.shape)
-        A_2 = A_1 # SKIPPING
-        A_3 = tf.nn.softmax(A_2, axis=-1) # ACROSS ROWS
-        A_4 = self.layers[0](A_3) # B A T T
-
-        A_5 = A_4 @ values # B A T H/A
-        A_5 = tf.transpose(A_5, [0, 2, 1, 3]) # B T A H/A
-        V_unlocked = tf.reshape(A_5, (B, T, self.H))
-        return V_unlocked
-        pass
+        B = tf.shape(queries)[0]
+        T = tf.shape(queries)[1]
+        H = self.H
+        A = self.A 
+        H_A = H // A
+        
+        # reshape queries, keys, values to separate attention heads
+        # shape: (B, T, H) -> (B, T, A, H/A)
+        queries = tf.reshape(queries, [B, T, A, H_A])
+        keys = tf.reshape(keys, [B, T, A, H_A])
+        values = tf.reshape(values, [B, T, A, H_A])
+        
+        # transpose to (B, A, T, H/A) for queries and values, and (B, A, H/A, T) for keys
+        queries = tf.transpose(queries, [0, 2, 1, 3])  # (B, A, T, H/A)
+        keys = tf.transpose(keys, [0, 2, 3, 1])        # (B, A, H/A, T)
+        values = tf.transpose(values, [0, 2, 1, 3])    # (B, A, T, H/A)
+        
+        # compute attention scores
+        A_1 = tf.matmul(queries, keys) * self.gain  # (B, A, T, T)
+        
+        # apply causal mask if needed
+        if self.causal:
+            mask = tril(T)
+            mask = tf.cast(mask, dtype=tf.float32)
+            mask2 = -1e9 * (1.0 - mask)
+            A_2 = A_1 + mask2
+        else:
+            A_2 = A_1
+        
+        # apply softmax to compute attention weights
+        A_3 = tf.nn.softmax(A_2, axis=-1)  # (B, A, T, T)
+        
+        # apply dropout to attention weights
+        A_4 = self.dropout_layer(A_3)  # (B, A, T, T)
+        
+        # apply attention weights to values
+        A_5 = tf.matmul(A_4, values)  # (B, A, T, H/A)
+        
+        # transpose back
+        A_5 = tf.transpose(A_5, [0, 2, 1, 3])  # (B, T, A, H/A)
+        
+        # reshape back to (B, T, H)
+        output = tf.reshape(A_5, [B, T, H])  # (B, T, H)
+        
+        return output
 
 
 class MultiHeadAttentionBlock(block.Block):
@@ -211,7 +236,26 @@ class MultiHeadAttentionBlock(block.Block):
         1. Call and pass in relevant information into the superclass constructor.
         2. Create all the layers and blocks.
         '''
-        pass
+        super().__init__(blockname, prev_layer_or_block)
+        
+        # create the QKV block
+        self.qkv_block = QueryKeyValueBlock(f"{blockname}_QKV", units, prev_layer_or_block)
+        
+        # create the attention block
+        self.attention_block = AttentionBlock(f"{blockname}_Attention", num_heads, units, 
+                                             prev_layer_or_block, dropout_rate, causal)
+        
+        # create the final dense layer (with He init and linear activation, no layer norm)
+        self.dense = Dense(f"{blockname}_Dense", units, activation='linear', 
+                           prev_layer_or_block=prev_layer_or_block, wt_init='he',
+                           do_batch_norm=False, do_layer_norm=False)
+        
+        # create the dropout layer
+        self.dropout = Dropout(f"{blockname}_Dropout", dropout_rate, prev_layer_or_block)
+        
+        # add all components to the layers list
+        self.layers.extend([self.qkv_block, self.attention_block, self.dense, self.dropout])
+
 
 
     def __call__(self, x):
@@ -227,7 +271,19 @@ class MultiHeadAttentionBlock(block.Block):
         tf.constant. tf.float32s. shape=(B, T, H).
             The output netActs
         '''
-        pass
+        # generate queries, keys, and values from the input
+        queries, keys, values = self.qkv_block(x, x, x)
+        
+        # pass through the attention block
+        attention_output = self.attention_block(queries, keys, values)
+        
+        # pass through the dense layer
+        dense_output = self.dense(attention_output)
+        
+        # apply dropout and return
+        output = self.dropout(dense_output)
+        
+        return output
 
 
 class MLPBlock(block.Block):
@@ -267,7 +323,23 @@ class MLPBlock(block.Block):
         1. Call and pass in relevant information into the superclass constructor.
         2. Create all the layers and blocks.
         '''
-        pass
+        super().__init__(blockname, prev_layer_or_block)
+        
+        # first dense layer - expanded dimension with gelu activation and layer norm
+        self.dense1 = Dense(f"{blockname}_Dense1", units * exp_factor, activation='gelu',
+                            prev_layer_or_block=prev_layer_or_block, wt_init='he',
+                            do_batch_norm=False, do_layer_norm=True)
+        
+        # second dense layer - no layer norm
+        self.dense2 = Dense(f"{blockname}_Dense2", units, activation='linear',
+                            prev_layer_or_block=self.dense1, wt_init='he',
+                            do_batch_norm=False, do_layer_norm=False)
+        
+        # dropout layer
+        self.dropout = Dropout(f"{blockname}_Dropout", dropout_rate, prev_layer_or_block=self.dense2)
+        
+        # add the layers to the block's layer list
+        self.layers.extend([self.dense1, self.dense2, self.dropout])
 
     def __call__(self, x):
         '''Forward pass through the MLPBlock with the data samples `x`.
@@ -282,7 +354,16 @@ class MLPBlock(block.Block):
         tf.constant. tf.float32s. shape=(B, T, H).
             The output netActs
         '''
-        pass
+        # pass through first dense layer
+        x = self.dense1(x)
+        
+        # pass through second dense layer
+        x = self.dense2(x)
+        
+        # apply dropout
+        x = self.dropout(x)
+        
+        return x
 
 
 class TransformerBlock(block.Block):
@@ -308,7 +389,28 @@ class TransformerBlock(block.Block):
         1. Call and pass in relevant information into the superclass constructor.
         2. Create all the layers and blocks.
         '''
-        pass
+        super().__init__(blockname, prev_layer_or_block)
+        
+        # layer normalization for attention branch
+        self.ln1 = Dense(f"{blockname}_LN1", units, activation='linear',
+                         prev_layer_or_block=prev_layer_or_block, wt_init='he',
+                         do_batch_norm=False, do_layer_norm=True)
+        
+        # multihead attention block
+        self.mha = MultiHeadAttentionBlock(f"{blockname}_MHA", num_heads, units, 
+                                          self.ln1, dropout_rate=dropout_rate)
+        
+        # layer normalization for MLP branch
+        self.ln2 = Dense(f"{blockname}_LN2", units, activation='linear',
+                         prev_layer_or_block=prev_layer_or_block, wt_init='he',
+                         do_batch_norm=False, do_layer_norm=True)
+        
+        # MLP block
+        self.mlp = MLPBlock(f"{blockname}_MLP", units, self.ln2, dropout_rate=dropout_rate)
+        
+        # add the components to the block's layer list
+        self.layers.extend([self.ln1, self.mha, self.ln2, self.mlp])
+
 
     def __call__(self, x):
         '''Forward pass through the Transformer block with the data samples `x`.
@@ -325,7 +427,21 @@ class TransformerBlock(block.Block):
 
         NOTE: Don't forget the residual connections that allows the input to skip to the end of each block.
         '''
-        pass
+        # first normal layer
+        norm1 = self.ln1(x)
+        
+        # multi-head attention with residual connection
+        attn_output = self.mha(norm1)
+        attn_output = x + attn_output  # Residual connection
+        
+        # second normalization layer 
+        norm2 = self.ln2(attn_output)
+        
+        # MLP with residual connection
+        mlp_output = self.mlp(norm2)
+        output = attn_output + mlp_output  # Residual connection
+        
+        return output
 
 
 class PositionalEncodingBlock(block.Block):

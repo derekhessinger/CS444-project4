@@ -131,6 +131,9 @@ class PositionalEncoding(layers.Layer):
             T is the sequence length, and H is the number of embedding layer neurons.
 
         NOTE:
+        - It might be helpful to think of creating sin frequences for H/2 neurons in the embedding layer and then
+        creating cos frequences for the remaining H/2 neurons separately. Then after having both sets, interleaving
+        them.
         - The provided `interleave_cols` function should be helpful, as should be tf.expand_dims.
         - To allow TensorFlow track the flow of gradients, you should implement this with 100% TensorFlow and no loops.
         '''

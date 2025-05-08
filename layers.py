@@ -175,6 +175,8 @@ class Layer:
             # print(f'compute-net_act... net in: {net_in}')
             # print(tf.nn.softmax(net_in))
             return tf.nn.softmax(net_in, axis=-1)  # Softmax applied across the last dimension
+        elif activation_to_use == 'gelu':
+            return self.gelu(net_in)
         else:
             raise ValueError(f'Unknown activation function {activation_to_use}')
 
@@ -260,6 +262,8 @@ class Layer:
         elif self.activation == 'linear':
             return 1
         elif self.activation == 'softmax':
+            return 1
+        elif self.activation == 'gelu':
             return 1
         else:
             raise ValueError(f'Unknown activation function within get_kaiming_gain() function {self.activation}')
@@ -413,7 +417,10 @@ class Layer:
         tf.constant. shape=(B, M)
             Output tensor after applying the GELU activation function.
         '''
-        pass
+        func = 0.5 * (1.0 + tf.tanh(
+        (tf.sqrt(2 / 3.14159265359) * (net_in + 0.044715 * tf.pow(net_in, 3)))))
+        return net_in * func
+        
 
 
 class Dense(Layer):
