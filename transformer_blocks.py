@@ -391,25 +391,26 @@ class TransformerBlock(block.Block):
         '''
         super().__init__(blockname, prev_layer_or_block)
         
-        # layer normalization for attention branch
-        self.ln1 = Dense(f"{blockname}_LN1", units, activation='linear',
-                         prev_layer_or_block=prev_layer_or_block, wt_init='he',
-                         do_batch_norm=False, do_layer_norm=True)
+        # # layer normalization for attention branch
+        # self.ln1 = Dense(f"{blockname}_LN1", units, activation='linear',
+        #                  prev_layer_or_block=prev_layer_or_block, wt_init='he',
+        #                  do_batch_norm=False, do_layer_norm=True)
         
         # multihead attention block
-        self.mha = MultiHeadAttentionBlock(f"{blockname}_MHA", num_heads, units, 
-                                          self.ln1, dropout_rate=dropout_rate)
+        self.mha = MultiHeadAttentionBlock(blockname=f"{blockname}_MHA", num_heads=num_heads, units=units, 
+                                          prev_layer_or_block=prev_layer_or_block, dropout_rate=dropout_rate)
         
-        # layer normalization for MLP branch
-        self.ln2 = Dense(f"{blockname}_LN2", units, activation='linear',
-                         prev_layer_or_block=prev_layer_or_block, wt_init='he',
-                         do_batch_norm=False, do_layer_norm=True)
+        # # layer normalization for MLP branch
+        # self.ln2 = Dense(f"{blockname}_LN2", units, activation='linear',
+        #                  prev_layer_or_block=prev_layer_or_block, wt_init='he',
+        #                  do_batch_norm=False, do_layer_norm=True)
         
         # MLP block
-        self.mlp = MLPBlock(f"{blockname}_MLP", units, self.ln2, dropout_rate=dropout_rate)
+        self.mlp = MLPBlock(f"{blockname}_MLP", units, self.mha, dropout_rate=dropout_rate)
         
         # add the components to the block's layer list
-        self.layers.extend([self.ln1, self.mha, self.ln2, self.mlp])
+        self.layers.extend([self.mha, self.mlp])
+        # self.layers.extend([self.ln1, self.mha, self.ln2, self.mlp])
 
 
     def __call__(self, x):
@@ -427,18 +428,18 @@ class TransformerBlock(block.Block):
 
         NOTE: Don't forget the residual connections that allows the input to skip to the end of each block.
         '''
-        # first normal layer
-        norm1 = self.ln1(x)
+        # # first normal layer
+        # norm1 = self.ln1(x)
         
         # multi-head attention with residual connection
-        attn_output = self.mha(norm1)
+        attn_output = self.mha(x)
         attn_output = x + attn_output  # Residual connection
         
         # second normalization layer 
-        norm2 = self.ln2(attn_output)
+        # norm2 = self.ln2(attn_output)
         
         # MLP with residual connection
-        mlp_output = self.mlp(norm2)
+        mlp_output = self.mlp(attn_output)
         output = attn_output + mlp_output  # Residual connection
         
         return output
@@ -468,6 +469,13 @@ class PositionalEncodingBlock(block.Block):
         1. Call and pass in relevant information into the superclass constructor.
         2. Create all the layers.
         '''
+        super().__init__(blockname, prev_layer_or_block)
+        pe_layer = PositionalEncoding(f'{blockname}_PE', embed_dim=embed_dim, prev_layer_or_block=prev_layer_or_block)
+        self.layers.append(pe_layer)
+        
+        dropout = Dropout(f"{blockname}_Dropout", dropout_rate, prev_layer_or_block=pe_layer)
+        self.layers.append(dropout)
+
         pass
 
     def __call__(self, x):
@@ -483,4 +491,6 @@ class PositionalEncodingBlock(block.Block):
         tf.constant. tf.float32s. shape=(B, T, H).
             The output netActs
         '''
+        netin_pre_drop = self.layers[0](x)
+        return self.layers[1](netin_pre_drop)
         pass
