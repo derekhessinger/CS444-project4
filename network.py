@@ -32,7 +32,10 @@ class DeepNetwork:
         self.all_net_params = []
         self.opt = None
 
-        self.input_feats_shape = input_feats_shape
+        if isinstance(input_feats_shape, int):
+            self.input_feats_shape = (input_feats_shape,)
+        else:
+            self.input_feats_shape = input_feats_shape
         self.reg = reg
 
     def compile(self, loss='cross_entropy', optimizer='adam', lr=1e-3, beta_1=0.9, print_summary=True):
