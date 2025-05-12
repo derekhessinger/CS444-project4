@@ -86,6 +86,7 @@ class GPT(network.DeepNetwork):
             # Compute the per-sample loss like usual
             act_at_correct = arange_index(out_net_act_flat, y_flat)
             loss = -tf.math.log(act_at_correct + eps)
+            #print(tf.reshape(act_at_correct, (N, T)))
 
             if mask_padding_preds:
                 # We want to nix padding chars from the loss, so mask them out
@@ -263,7 +264,36 @@ class GPTPico1(GPT):
         1. Call and pass in relevant information into the superclass constructor.
         2. Create all the layers and blocks.
         '''
-        pass
+        super().__init__(seq_len, padding_char_enc)
+        self.seq_len = seq_len
+        self.vocab_sz = vocab_sz
+        self.num_heads = num_heads
+        self.embed_dim = embed_dim
+        self.dropout_rate = dropout_rate
+
+        # Create all layers and blocks
+        self.layers = []
+
+        # embedding layer
+        embed_layer = Embedding('Embedding_Layer_0', vocab_sz, self.embed_dim)
+        self.layers.append(embed_layer)
+        # pos enc block
+        pos_block = PositionalEncodingBlock('Positional_Encoding_Block_0', self.embed_dim, prev_layer_or_block=embed_layer, 
+                                            dropout_rate=self.dropout_rate)
+        self.layers.append(pos_block)
+        # transformer 0
+        trans_0 = TransformerBlock('Transformer_Block_0', embed_dim, self.num_heads, prev_layer_or_block=pos_block, 
+                                   dropout_rate=self.dropout_rate)
+        self.layers.append(trans_0)
+
+        # Add after the transformer block:
+        output_layer = Dense(f"Output_Layer", units=self.vocab_sz, 
+                            activation='softmax', prev_layer_or_block=trans_0, 
+                            wt_init='he', do_batch_norm=False, do_layer_norm=True)
+        self.layers.append(output_layer)
+
+        # Then set the output layer correctly:
+        self.output_layer = output_layer
 
 
 class GPTMini6(GPT):
