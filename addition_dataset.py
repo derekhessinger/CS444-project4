@@ -357,6 +357,8 @@ def make_blank_expressions(N, max_operand_digits=2, seed=1, operation = '+'):
         max_result = max_operand  # max_operand // 1
     elif operation == '%':
         max_result = max_operand  # max_operand % 1
+    else:
+        print(f'UNKNOWN operation! {operation}')
     max_result_len = len(str(max_result))
 
     # Total expression length: operand1 + operator + operand2 + '=' + product + '.' 
@@ -421,25 +423,26 @@ def make_reduction_expressions(N, max_operand_digits=2, seed=1, digit = 0):
     # Compute maximum length of any product string
     max_result_len = 1
 
-    # Total expression length: operand1 + operator + '=' + product + '.' 
-    expr_len = max_operand_digits + 2 + 1 + max_result_len + 1
+    # Total expression length: operand1 + 'd' + digit + '=' + product + '.'
+    expr_len = max_operand_digits + 1 + 1 + 1 + 1 + 1  # = max_operand_digits + 5
+
 
     # RNG for reproducibility
     rng = np.random.default_rng(seed)
     operands = rng.integers(0, max_operand + 1, size=(N, 1))
 
-    results  = operands[:, 0]# Get the digit... so if digit = 0, I want the one's place returned, in digit = 3, I want the thousands place returned
+    results = (operands[:, 0] // (10**digit)) % 10
 
     # Build vocab mapping
     char2ind_map = {str(d): d for d in range(10)}
-    char2ind_map[f'{str(digit)}s'] = 10
+    char2ind_map['d'] = 10
     char2ind_map['='] = 11
     char2ind_map['.'] = 12
     char2ind_map['#'] = 13
 
     expressions = []
-    for a, b, p in zip(operands[:,0], operands[:,1], results ):
-        expr = f'{a}{str(digit)}s{b}={p}.'
+    for a, p in zip(operands[:,0], results ):
+        expr = f'{a}d{str(digit)}={p}.'
         # pad with '#' so all have length expr_len
         expr = expr.ljust(expr_len, '#')
         expressions.append(list(expr))
@@ -448,7 +451,58 @@ def make_reduction_expressions(N, max_operand_digits=2, seed=1, digit = 0):
 
 def get_reduction_dataset(N, digit=0, max_operand_digits=2, seed=1, val_prop=0.1):
     # 1) build the raw operations expressions & vocab
-    expressions, char2ind_map = make_blank_expressions(N, max_operand_digits, seed, operation=digit)
+    expressions, char2ind_map = make_reduction_expressions(N, max_operand_digits, seed, digit=digit)
+
+    # 2) reuse the addition-sample helper to turn chars → ints & split samples/labels
+    x_int, y_int = make_addition_samples_and_labels(expressions, char2ind_map)
+
+    # 3) split into train/validation sets
+    x_train, y_train, x_val, y_val = make_train_val_split(
+        x_int, y_int, val_prop
+    )
+
+    return x_train, y_train, x_val, y_val, char2ind_map
+
+
+def make_reduction_expressions_multi(N_per, max_operand_digits=2, seed=1):
+    '''Generates arithmetic expressions using the multiplication operator (*) and two operands.'''
+    import numpy as np
+
+    # Largest operand (e.g. 99 if max_operand_digits=2)
+    max_operand = int('9' * max_operand_digits)
+    # Compute maximum length of any product string
+    max_result_len = 1
+    # Total expression length: operand1 + 'd' + digit + '=' + product + '.'
+    expr_len = max_operand_digits + 1 + 1 + 1 + 1 + 1  # = max_operand_digits + 5
+    # RNG for reproducibility
+    rng = np.random.default_rng(seed)
+
+
+    expressions = []
+
+    # Build vocab mapping
+    char2ind_map = {str(n): n for n in range(10)}
+    char2ind_map['d'] = 10
+    char2ind_map['='] = 11
+    char2ind_map['.'] = 12
+    char2ind_map['#'] = 13
+
+    for d in range(max_operand_digits):
+        operands = rng.integers(0, max_operand + 1, size=(N_per, 1))
+        results = (operands[:, 0] // (10**d)) % 10
+
+        for a, p in zip(operands[:,0], results ):
+            expr = f'{a}d{str(d)}={p}.'
+            # pad with '#' so all have length expr_len
+            expr = expr.ljust(expr_len, '#')
+            expressions.append(list(expr))
+
+    rng.shuffle(expressions)
+    return expressions, char2ind_map
+
+def get_reduction_dataset_multi(N_per, max_operand_digits=2, seed=1, val_prop=0.1):
+    # 1) build the raw operations expressions & vocab
+    expressions, char2ind_map = make_reduction_expressions_multi(N_per, max_operand_digits, seed)
 
     # 2) reuse the addition-sample helper to turn chars → ints & split samples/labels
     x_int, y_int = make_addition_samples_and_labels(expressions, char2ind_map)
